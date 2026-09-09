@@ -3,6 +3,7 @@
 Static Analyzer for iOS Apps
 Performs offline analysis of iOS application bundles without running the app.
 Uses LIEF for binary parsing (easier to install than macholib).
+No external image processing libraries required.
 """
 
 import os
@@ -28,13 +29,20 @@ except ImportError:
     LIEF_AVAILABLE = False
     print("[!] LIEF not installed. Install with: pip install lief")
 
-# Optional dependencies
-try:
-    from PIL import Image
-    PIL_AVAILABLE = True
-except ImportError:
-    PIL_AVAILABLE = False
+# NO PIL/Pillow required - we don't process images!
 
+# ---------------------------------------------------------------------------
+# ANSI Colors for output
+# ---------------------------------------------------------------------------
+class Colors:
+    BLUE = "\033[94m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    RED = "\033[91m"
+    CYAN = "\033[96m"
+    PURPLE = "\033[95m"
+    BOLD = "\033[1m"
+    END = "\033[0m"
 
 # ---------------------------------------------------------------------------
 # Data Models
@@ -477,7 +485,7 @@ class iOSStaticAnalyzer:
         # Architecture from file command
         if self.binary_path:
             try:
-                output = subprocess.check_output(['file', str(self.binary_path)], text=True)
+                output = subprocess.check_output(['file', str(self.binary_path)], text=True, stderr=subprocess.DEVNULL)
                 if 'Mach-O' in output:
                     arch_pattern = re.compile(r'(arm64|armv7|armv7s|x86_64|i386)')
                     architectures = arch_pattern.findall(output)
@@ -488,7 +496,7 @@ class iOSStaticAnalyzer:
         # Get libraries from otool if available
         if self.binary_path:
             try:
-                output = subprocess.check_output(['otool', '-L', str(self.binary_path)], text=True)
+                output = subprocess.check_output(['otool', '-L', str(self.binary_path)], text=True, stderr=subprocess.DEVNULL)
                 for line in output.split('\n'):
                     if '.dylib' in line or '.framework' in line:
                         lib = line.strip().split(' ')[0]
@@ -799,3 +807,277 @@ class iOSStaticAnalyzer:
             'critical': sum(1 for i in self.report.security_issues if i.get('severity') == 'CRITICAL'),
             'high': sum(1 for i in self.report.security_issues if i.get('severity') == 'HIGH'),
             'medium': sum(1 for i in self.report.security_issues if i.get('severity') == 'MEDIUM'),
+            'low': sum(1 for i in self.report.security_issues if i.get('severity') == 'LOW'),
+            'info': sum(1 for i in self.report.security_issues if i.get('severity') == 'INFO'),
+        }
+        self.report.findings_summary = summary
+    
+    def generate_report(self) -> Dict[str, Any]:
+        """Generate a comprehensive report dictionary"""
+        return {
+            "timestamp": self.report.timestamp,
+            "app_bundle_path": str(self.app_bundle_path) if self.app_bundle_path else "",
+            "plist_analysis": asdict(self.report.plist_analysis),
+            "binary_analysis": asdict(self.report.binary_analysis),
+            "security_score": self.report.security_score,
+            "security_issues": self.report.security_issues,
+            "recommendations": self.report.recommendations,
+            "findings_summary": self.report.findings_summary
+        }
+    
+    def generate_html_report(self) -> Path:
+        """Generate an HTML report"""
+        data = self.generate_report()
+        
+        # Severity colors
+        severity_colors = {
+            'CRITICAL': '#e74c3c',
+            'HIGH': '#e67e22',
+            'MEDIUM': '#f1c40f',
+            'LOW': '#2ecc71',
+            'INFO': '#3498db'
+        }
+        
+        # Build issues HTML
+        issues_html = ""
+        for issue in data['security_issues']:
+            severity = issue.get('severity', 'INFO')
+            color = severity_colors.get(severity, '#3498db')
+            issues_html += f"""
+            <div class="issue" style="border-left-color: {color};">
+                <span class="severity {severity.lower()}">{severity}</span>
+                {issue['issue']}
+            </div>
+            """
+        
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>Static Analysis Report</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }}
+                .container {{ max-width: 1200px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+                .header {{ background: #2c3e50; color: white; padding: 30px; border-radius: 8px 8px 0 0; margin: -30px -30px 20px -30px; }}
+                .score {{ font-size: 48px; font-weight: bold; text-align: center; padding: 20px; }}
+                .score-good {{ color: #27ae60; }}
+                .score-medium {{ color: #f39c12; }}
+                .score-bad {{ color: #e74c3c; }}
+                .section {{ margin: 20px 0; }}
+                .section-title {{ font-size: 20px; font-weight: bold; border-bottom: 2px solid #3498db; padding-bottom: 10px; }}
+                .issue {{ margin: 10px 0; padding: 15px; border-left: 5px solid #ccc; background: #fafafa; border-radius: 3px; }}
+                .severity {{ font-weight: bold; margin-right: 10px; }}
+                .critical {{ color: #e74c3c; }}
+                .high {{ color: #e67e22; }}
+                .medium {{ color: #f1c40f; }}
+                .low {{ color: #2ecc71; }}
+                .info {{ color: #3498db; }}
+                .summary-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 15px; margin: 20px 0; }}
+                .summary-item {{ background: #ecf0f1; padding: 15px; border-radius: 5px; text-align: center; }}
+                .summary-item .number {{ font-size: 28px; font-weight: bold; }}
+                table {{ width: 100%; border-collapse: collapse; margin: 10px 0; }}
+                th, td {{ padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }}
+                th {{ background: #ecf0f1; }}
+                pre {{ background: #eee; padding: 10px; border-radius: 3px; overflow-x: auto; max-height: 200px; font-size: 12px; }}
+                .footer {{ margin-top: 30px; color: #7f8c8d; text-align: center; font-size: 12px; }}
+                ul {{ margin: 5px 0; }}
+                li {{ margin: 3px 0; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>📱 iOS Static Analysis Report</h1>
+                    <p><strong>App:</strong> {data['plist_analysis']['app_name']} ({data['plist_analysis']['bundle_id']})</p>
+                    <p><strong>Version:</strong> {data['plist_analysis']['version']} ({data['plist_analysis']['build']})</p>
+                    <p><strong>Minimum OS:</strong> {data['plist_analysis']['minimum_os']}</p>
+                    <p><strong>Date:</strong> {data['timestamp']}</p>
+                </div>
+                
+                <div class="score {'score-good' if data['security_score'] >= 70 else 'score-medium' if data['security_score'] >= 40 else 'score-bad'}">
+                    🛡️ Security Score: {data['security_score']}/100
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">📊 Summary</div>
+                    <div class="summary-grid">
+                        <div class="summary-item"><div class="number">{data['findings_summary']['total_issues']}</div>Total Issues</div>
+                        <div class="summary-item"><div class="number">{data['findings_summary']['critical']}</div>Critical</div>
+                        <div class="summary-item"><div class="number">{data['findings_summary']['high']}</div>High</div>
+                        <div class="summary-item"><div class="number">{data['findings_summary']['medium']}</div>Medium</div>
+                        <div class="summary-item"><div class="number">{data['findings_summary']['low']}</div>Low</div>
+                        <div class="summary-item"><div class="number">{data['findings_summary']['info']}</div>Info</div>
+                    </div>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">🔐 Security Issues</div>
+                    {issues_html if issues_html else '<p>✅ No security issues found!</p>'}
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">💡 Recommendations</div>
+                    <ul>
+                        {''.join(f'<li>{r}</li>' for r in data['recommendations'])}
+                    </ul>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">📋 App Transport Security (ATS)</div>
+                    <pre>{json.dumps(data['plist_analysis']['ats_config'], indent=2)}</pre>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">🔒 Privacy Usage</div>
+                    <ul>
+                        {''.join(f'<li>{p}</li>' for p in data['plist_analysis']['privacy_usage']) if data['plist_analysis']['privacy_usage'] else '<li>No privacy usage declared</li>'}
+                    </ul>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">📦 Frameworks Detected</div>
+                    <ul>
+                        {''.join(f'<li>{f}</li>' for f in data['binary_analysis']['frameworks']) if data['binary_analysis']['frameworks'] else '<li>No frameworks detected</li>'}
+                    </ul>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">🔗 Linked Libraries</div>
+                    <ul>
+                        {''.join(f'<li>{lib}</li>' for lib in data['binary_analysis']['linked_libraries'][:20]) if data['binary_analysis']['linked_libraries'] else '<li>No libraries detected</li>'}
+                    </ul>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">🔑 Hardcoded Secrets</div>
+                    <ul>
+                        {''.join(f'<li><code>{s}</code></li>' for s in data['binary_analysis']['hardcoded_secrets']) if data['binary_analysis']['hardcoded_secrets'] else '<li>✅ No hardcoded secrets found</li>'}
+                    </ul>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">🔍 Suspicious Strings</div>
+                    <ul>
+                        {''.join(f'<li><code>{s}</code></li>' for s in data['binary_analysis']['suspicious_strings'][:20]) if data['binary_analysis']['suspicious_strings'] else '<li>No suspicious strings found</li>'}
+                    </ul>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">🌐 Hardcoded URLs</div>
+                    <ul>
+                        {''.join(f'<li><a href="{url}" target="_blank">{url}</a></li>' for url in data['binary_analysis']['hardcoded_urls'][:20]) if data['binary_analysis']['hardcoded_urls'] else '<li>No hardcoded URLs found</li>'}
+                    </ul>
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">🔐 Cryptography</div>
+                    <table>
+                        <tr><th>Function</th></tr>
+                        {''.join(f'<tr><td>{c}</td></tr>' for c in data['binary_analysis']['crypto_functions']) if data['binary_analysis']['crypto_functions'] else '<tr><td>No crypto functions detected</td></tr>'}
+                    </table>
+                    {f"<p><strong>Weak crypto found:</strong> {', '.join(data['binary_analysis']['weak_crypto_found'])}</p>" if data['binary_analysis']['weak_crypto_found'] else ''}
+                </div>
+                
+                <div class="section">
+                    <div class="section-title">🏗️ Architecture</div>
+                    <ul>
+                        {''.join(f'<li>{arch}</li>' for arch in data['binary_analysis']['architecture']) if data['binary_analysis']['architecture'] else '<li>Unknown</li>'}
+                    </ul>
+                </div>
+                
+                <div class="footer">
+                    Generated by iOS Auto Frida v2.0 - Static Analyzer
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        filename = f"static_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+        out_path = self.output_dir / filename
+        out_path.write_text(html, encoding='utf-8')
+        return out_path
+    
+    def generate_json_report(self) -> Path:
+        """Generate a JSON report"""
+        data = self.generate_report()
+        filename = f"static_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        out_path = self.output_dir / filename
+        with open(out_path, 'w') as f:
+            json.dump(data, f, indent=2)
+        return out_path
+
+
+# ---------------------------------------------------------------------------
+# CLI for standalone static analysis
+# ---------------------------------------------------------------------------
+def main():
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description="iOS Static Analyzer - Analyze iOS app bundles without running them",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Analyze an IPA file
+  python static_analyzer.py /path/to/app.ipa
+  
+  # Analyze an extracted .app bundle
+  python static_analyzer.py /path/to/MyApp.app
+  
+  # Analyze with bundle ID filter
+  python static_analyzer.py /path/to/apps/ --bundle-id com.example.app
+  
+  # Generate JSON report
+  python static_analyzer.py app.ipa --json --output ./reports
+        """
+    )
+    parser.add_argument("app_path", help="Path to .ipa file, .app bundle, or directory containing them")
+    parser.add_argument("--bundle-id", "-b", help="Bundle ID to analyze (if multiple apps found)")
+    parser.add_argument("--output", "-o", default="reports", help="Output directory for reports")
+    parser.add_argument("--json", action="store_true", help="Generate JSON report")
+    parser.add_argument("--no-html", action="store_true", help="Skip HTML report generation")
+    
+    args = parser.parse_args()
+    
+    # Check for LIEF availability
+    if not LIEF_AVAILABLE:
+        print(f"{Colors.YELLOW}[!] LIEF not installed. Falling back to strings-only analysis.{Colors.END}")
+        print(f"{Colors.YELLOW}    Install LIEF for better results: pip install lief{Colors.END}")
+    
+    analyzer = iOSStaticAnalyzer(Path(args.output))
+    try:
+        report = analyzer.analyze_app(Path(args.app_path), args.bundle_id)
+        
+        # Generate reports
+        if not args.no_html:
+            html_path = analyzer.generate_html_report()
+            print(f"\n{Colors.GREEN}[+] HTML report saved to: {html_path}{Colors.END}")
+        
+        if args.json:
+            json_path = analyzer.generate_json_report()
+            print(f"{Colors.GREEN}[+] JSON report saved to: {json_path}{Colors.END}")
+        
+        # Print summary
+        print(f"\n{Colors.CYAN}Summary:{Colors.END}")
+        print(f"  Security Score: {report.security_score}/100")
+        print(f"  Total Issues: {len(report.security_issues)}")
+        print(f"  Critical: {sum(1 for i in report.security_issues if i.get('severity') == 'CRITICAL')}")
+        print(f"  High: {sum(1 for i in report.security_issues if i.get('severity') == 'HIGH')}")
+        
+        if report.recommendations:
+            print(f"\n{Colors.CYAN}Top Recommendation:{Colors.END}")
+            print(f"  {report.recommendations[0]}")
+            
+    except Exception as e:
+        print(f"{Colors.RED}[!] Analysis failed: {e}{Colors.END}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+    finally:
+        analyzer.cleanup()
+
+
+if __name__ == "__main__":
+    main()
