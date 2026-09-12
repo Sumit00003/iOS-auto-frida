@@ -1,0 +1,5 @@
+# iOS Auto Frida Requirements
+# Install with: pip install -r requirements.txt
+
+frida>=16.0.0
+frida-tools>=12.0.0
